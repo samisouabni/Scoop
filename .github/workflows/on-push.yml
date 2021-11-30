@@ -37,9 +37,10 @@ jobs:
         # A file, directory or wildcard pattern that describes what to upload
         path: bin/install.ps1
         if-no-files-found: error # optional, default is warn
-    - uses: ncipollo/release-action@v1
+    - name: GH Release
+      uses: softprops/action-gh-release@v0.1.14
       with:
         name: scoop-install-${{ steps.previoustag.outputs.tag }}
         tag: ${{ steps.previoustag.outputs.tag }}
-        artifacts: "bin/install.ps1"
+        files: "bin/install.ps1"
         token: ${{ secrets.GITHUB_TOKEN }}
