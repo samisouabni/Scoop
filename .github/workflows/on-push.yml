@@ -29,7 +29,7 @@ jobs:
     - name: 'Replace core.ps1 URL'
       run: sed -ri s,https://raw.githubusercontent.com/ScoopInstaller/Scoop/master/lib/core.ps1,https://raw.githubusercontent.com/samisouabni/Scoop/master/lib/core.ps1,g bin/install.ps1
     - name: 'Fix Copy Command using AWK'
-      run: sed -i s,dir\_tmp\*master,dir\_tmp\Scoop-*,g bin/install.ps1
+      run: sed -i 's/dir\\_tmp\\\*master/dir\\_tmp\\Scoop-*/g' bin/install.ps1
     
     - name: Upload a Build Artifact
       uses: actions/upload-artifact@v2.2.4
