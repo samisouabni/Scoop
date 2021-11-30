@@ -36,9 +36,10 @@ jobs:
       uses: "WyriHaximus/github-action-get-previous-tag@v1"
     - name: Send greeting
       run: echo "Tag is ${{ steps.previoustag.outputs.tag }}"
-    - name: 'Replace URL'
+    - name: 'Replace Installer URL'
       run: sed -ri s,https://github.com/ScoopInstaller/Scoop/archive/master.zip,https://github.com/samisouabni/Scoop/archive/refs/tags/${{ steps.previoustag.outputs.tag }}.zip,g bin/install.ps1
-      
+    - name: 'Replace Main Bucket URL'
+      run: sed -ri s,https://github.com/ScoopInstaller/Main/archive/master.zip,https://github.com/samisouabni/Main/archive/refs/tags/2021-11-30.zip,g bin/install.ps1
     - name: Upload a Build Artifact
       uses: actions/upload-artifact@v2.2.4
       with:
