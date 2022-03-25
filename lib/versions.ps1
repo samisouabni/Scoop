@@ -50,16 +50,17 @@ function Select-CurrentVersion {
         $Global
     )
     process {
-        $appPath = appdir $AppName $Global
-        if (Test-Path "$appPath\current" -PathType Container) {
-            $currentVersion = (installed_manifest $AppName 'current' $Global).version
+        $currentPath = "$(appdir $AppName $Global)\current"
+        if (!(get_config NO_JUNCTIONS)) {
+            $currentVersion = (parse_json "$currentPath\manifest.json").version
             if ($currentVersion -eq 'nightly') {
-                $currentVersion = (Get-Item "$appPath\current").Target | Split-Path -Leaf
+                $currentVersion = (Get-Item $currentPath).Target | Split-Path -Leaf
             }
-        } else {
+        }
+        if ($null -eq $currentVersion) {
             $installedVersion = Get-InstalledVersion -AppName $AppName -Global:$Global
             if ($installedVersion) {
-                $currentVersion = $installedVersion[-1]
+                $currentVersion = @($installedVersion)[-1]
             } else {
                 $currentVersion = $null
             }
@@ -135,7 +136,7 @@ function Compare-Version {
         $Delimiter = '-'
     )
     process {
-        # Use '+' sign as post-release, see https://github.com/lukesampson/scoop/pull/3721#issuecomment-553718093
+        # Use '+' sign as post-release, see https://github.com/ScoopInstaller/Scoop/pull/3721#issuecomment-553718093
         $ReferenceVersion, $DifferenceVersion = @($ReferenceVersion, $DifferenceVersion) -replace '\+', '-'
 
         # Return 0 if versions are equal

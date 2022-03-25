@@ -7,6 +7,10 @@
             "pattern": "^([a-fA-F0-9]{64}|(sha1|sha256|sha512|md5):([a-fA-F0-9]{32}|[a-fA-F0-9]{40}|[a-fA-F0-9]{64}|[a-fA-F0-9]{128}))$",
             "type": "string"
         },
+        "jsonPathPattern": {
+            "pattern": "^\\$[.\\[].*$",
+            "type": "string"
+        },
         "hash": {
             "anyOf": [
                 {
@@ -35,13 +39,11 @@
                     "type": "string"
                 },
                 "jp": {
-                    "pattern": "^\\$[.[].*$",
-                    "type": "string",
+                    "$ref": "#/definitions/jsonPathPattern",
                     "description": "Same as 'jsonpath'"
                 },
                 "jsonpath": {
-                    "pattern": "^\\$[.[].*$",
-                    "type": "string"
+                    "$ref": "#/definitions/jsonPathPattern"
                 },
                 "xpath": {
                     "type": "string"
@@ -221,7 +223,10 @@
                 "persist": {
                     "$ref": "#/definitions/stringOrArrayOfStringsOrAnArrayOfArrayOfStrings"
                 },
-                "note": {
+                "license": {
+                    "$ref": "#/definitions/license"
+                },
+                "notes": {
                     "$ref": "#/definitions/stringOrArrayOfStrings"
                 }
             },
@@ -234,7 +239,7 @@
                 },
                 {
                     "properties": {
-                        "note": {
+                        "notes": {
                             "$ref": "#/definitions/stringOrArrayOfStrings"
                         },
                         "architecture": {
@@ -281,13 +286,11 @@
                             "type": "string"
                         },
                         "jp": {
-                            "pattern": "^\\$[.[].*$",
-                            "type": "string",
+                            "$ref": "#/definitions/jsonPathPattern",
                             "description": "Same as 'jsonpath'"
                         },
                         "jsonpath": {
-                            "pattern": "^\\$[.[].*$",
-                            "type": "string"
+                            "$ref": "#/definitions/jsonPathPattern"
                         },
                         "xpath": {
                             "type": "string"
@@ -453,9 +456,36 @@
                 "Shareware",
                 "Unlicense"
             ]
+        },
+        "license": {
+            "anyOf": [
+                {
+                    "$ref": "#/definitions/licenseIdentifiers"
+                },
+                {
+                    "additionalProperties": false,
+                    "properties": {
+                        "url": {
+                            "format": "uri",
+                            "type": "string"
+                        },
+                        "identifier": {
+                            "$ref": "#/definitions/licenseIdentifiers"
+                        }
+                    },
+                    "required": [
+                        "identifier"
+                    ],
+                    "type": "object"
+                }
+            ]
         }
     },
     "properties": {
+        "$schema": {
+            "type": "string",
+            "format": "uri"
+        },
         "_comment": {
             "description": "Deprecated. Use ## instead.",
             "$ref": "#/definitions/stringOrArrayOfStrings"
@@ -518,34 +548,14 @@
             "type": "string"
         },
         "innosetup": {
-            "description": "True if the installer InnoSetup based. Found in https://github.com/lukesampson/scoop/search?l=JSON&q=innosetup",
+            "description": "True if the installer InnoSetup based. Found in https://github.com/ScoopInstaller/Main/search?l=JSON&q=innosetup",
             "type": "boolean"
         },
         "installer": {
             "$ref": "#/definitions/installer"
         },
         "license": {
-            "anyOf": [
-                {
-                    "$ref": "#/definitions/licenseIdentifiers"
-                },
-                {
-                    "additionalProperties": false,
-                    "properties": {
-                        "url": {
-                            "format": "uri",
-                            "type": "string"
-                        },
-                        "identifier": {
-                            "$ref": "#/definitions/licenseIdentifiers"
-                        }
-                    },
-                    "required": [
-                        "identifier"
-                    ],
-                    "type": "object"
-                }
-            ]
+            "$ref": "#/definitions/license"
         },
         "msi": {
             "$ref": "#/definitions/stringOrArrayOfStrings",
@@ -593,7 +603,10 @@
         }
     },
     "required": [
-        "version"
+        "version",
+        "description",
+        "homepage",
+        "license"
     ],
     "title": "scoop app manifest schema",
     "type": "object"

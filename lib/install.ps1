@@ -1,5 +1,5 @@
-. "$psscriptroot/autoupdate.ps1"
-. "$psscriptroot/buckets.ps1"
+. "$PSScriptRoot\autoupdate.ps1"
+. "$PSScriptRoot\buckets.ps1"
 
 function nightly_version($date, $quiet = $false) {
     $date_str = $date.tostring("yyyyMMdd")
@@ -34,6 +34,19 @@ function install_app($app, $architecture, $global, $suggested, $use_cache = $tru
         return
     }
 
+    if ((get_config 'manifest_review' $false) -and ($MyInvocation.ScriptName -notlike '*scoop-update*')) {
+        Write-Host "Manifest: $app.json"
+        $style = get_config cat_style
+        if ($style) {
+            $manifest | ConvertToPrettyJson | bat --no-paging --style $style --language json
+        } else {
+            $manifest | ConvertToPrettyJson
+        }
+        $answer = Read-Host -Prompt "Continue installation? [Y/n]"
+        if (($answer -eq 'n') -or ($answer -eq 'N')) {
+            return
+        }
+    }
     write-output "Installing '$app' ($version) [$architecture]"
 
     $dir = ensure (versiondir $app $version $global)
@@ -48,7 +61,6 @@ function install_app($app, $architecture, $global, $suggested, $use_cache = $tru
     create_shims $manifest $dir $global $architecture
     create_startmenu_shortcuts $manifest $dir $global $architecture
     install_psmodule $manifest $dir $global
-    if($global) { ensure_scoop_in_path $global } # can assume local scoop is in path
     env_add_path $manifest $dir $global $architecture
     env_set $manifest $dir $global $architecture
 
@@ -277,7 +289,9 @@ function dl_with_cache_aria2($app, $version, $manifest, $architecture, $dir, $co
     if (-not($download_finished)) {
         # write aria2 input file
         if ($urlstxt_content -ne '') {
-            Set-Content -Path $urlstxt $urlstxt_content
+            ensure $cachedir | Out-Null
+            # Write aria2 input-file with UTF8NoBOM encoding
+            $urlstxt_content | Out-UTF8File -FilePath $urlstxt
         }
 
         # build aria2 command
@@ -285,6 +299,10 @@ function dl_with_cache_aria2($app, $version, $manifest, $architecture, $dir, $co
 
         # handle aria2 console output
         Write-Host 'Starting download with aria2 ...'
+
+        # Set console output encoding to UTF8 for non-ASCII characters printing
+        $oriConsoleEncoding = [Console]::OutputEncoding
+        [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding
 
         Invoke-Expression $aria2 | ForEach-Object {
             # Skip blank lines
@@ -321,6 +339,9 @@ function dl_with_cache_aria2($app, $version, $manifest, $architecture, $dir, $co
             Remove-Item $urlstxt -Force -ErrorAction SilentlyContinue
             Remove-Item "$($data.$url.source).aria2*" -Force -ErrorAction SilentlyContinue
         }
+
+        # Revert console encoding
+        [Console]::OutputEncoding = $oriConsoleEncoding
     }
 
     foreach ($url in $urls) {
@@ -600,9 +621,9 @@ function dl_urls($app, $version, $manifest, $bucket, $architecture, $dir, $use_c
             } else {
                 $extract_fn = 'Expand-MsiArchive'
             }
-        } elseif(Test-ZstdRequirement -File $fname) { # Zstd first
+        } elseif(Test-ZstdRequirement -Uri $fname) { # Zstd first
             $extract_fn = 'Expand-ZstdArchive'
-        } elseif(Test-7zipRequirement -File $fname) { # 7zip
+        } elseif(Test-7zipRequirement -Uri $fname) { # 7zip
             $extract_fn = 'Expand-7zipArchive'
         }
 
@@ -869,42 +890,39 @@ function create_shims($manifest, $dir, $global, $arch) {
     }
 }
 
-function rm_shim($name, $shimdir) {
-    $shim = "$shimdir\$name.ps1"
-
-    if(!(test-path $shim)) { # handle no shim from failed install
-        warn "Shim for '$name' is missing. Skipping."
-    } else {
-        write-output "Removing shim for '$name'."
-        Remove-Item $shim
-    }
-
-    # other shim types might be present
-    '', '.exe', '.shim', '.cmd' | ForEach-Object {
-        if(test-path -Path "$shimdir\$name$_" -PathType leaf) {
-            Remove-Item "$shimdir\$name$_"
+function rm_shim($name, $shimdir, $app) {
+    '', '.shim', '.cmd', '.ps1' | ForEach-Object {
+        $shimPath = "$shimdir\$name$_"
+        $altShimPath = "$shimPath.$app"
+        if ($app -and (Test-Path -Path $altShimPath -PathType Leaf)) {
+            Write-Output "Removing shim '$name$_.$app'."
+            Remove-Item $altShimPath
+        } elseif (Test-Path -Path $shimPath -PathType Leaf) {
+            Write-Output "Removing shim '$name$_'."
+            Remove-Item $shimPath
+            $oldShims = Get-Item -Path "$shimPath.*" -Exclude '*.shim', '*.cmd', '*.ps1'
+            if ($null -eq $oldShims) {
+                if ($_ -eq '.shim') {
+                    Write-Output "Removing shim '$name.exe'."
+                    Remove-Item -Path "$shimdir\$name.exe"
+                }
+            } else {
+                (@($oldShims) | Sort-Object -Property LastWriteTimeUtc)[-1] | Rename-Item -NewName { $_.Name -replace '\.[^.]*$', '' }
+            }
         }
     }
 }
 
-function rm_shims($manifest, $global, $arch) {
+function rm_shims($app, $manifest, $global, $arch) {
     $shims = @(arch_specific 'bin' $manifest $arch)
 
     $shims | Where-Object { $_ -ne $null } | ForEach-Object {
         $target, $name, $null = shim_def $_
         $shimdir = shimdir $global
 
-        rm_shim $name $shimdir
+        rm_shim $name $shimdir $app
     }
 }
-
-# Gets the path for the 'current' directory junction for
-# the specified version directory.
-function current_dir($versiondir) {
-    $parent = split-path $versiondir
-    return "$parent\current"
-}
-
 
 # Creates or updates the directory junction for [app]/current,
 # pointing to the specified version directory for the app.
@@ -912,23 +930,23 @@ function current_dir($versiondir) {
 # Returns the 'current' junction directory if in use, otherwise
 # the version directory.
 function link_current($versiondir) {
-    if(get_config NO_JUNCTIONS) { return $versiondir }
+    if (get_config NO_JUNCTIONS) { return $versiondir.ToString() }
 
-    $currentdir = current_dir $versiondir
+    $currentdir = "$(Split-Path $versiondir)\current"
 
-    write-host "Linking $(friendly_path $currentdir) => $(friendly_path $versiondir)"
+    Write-Host "Linking $(friendly_path $currentdir) => $(friendly_path $versiondir)"
 
-    if($currentdir -eq $versiondir) {
+    if ($currentdir -eq $versiondir) {
         abort "Error: Version 'current' is not allowed!"
     }
 
-    if(test-path $currentdir) {
+    if (Test-Path $currentdir) {
         # remove the junction
         attrib -R /L $currentdir
-        & "$env:COMSPEC" /c rmdir $currentdir
+        Remove-Item $currentdir -Recurse -Force -ErrorAction Stop
     }
 
-    & "$env:COMSPEC" /c mklink /j $currentdir $versiondir | out-null
+    New-Item -Path $currentdir -ItemType Junction -Value $versiondir | Out-Null
     attrib $currentdir +R /L
     return $currentdir
 }
@@ -939,17 +957,17 @@ function link_current($versiondir) {
 # Returns the 'current' junction directory (if it exists),
 # otherwise the normal version directory.
 function unlink_current($versiondir) {
-    if(get_config NO_JUNCTIONS) { return $versiondir }
-    $currentdir = current_dir $versiondir
+    if (get_config NO_JUNCTIONS) { return $versiondir.ToString() }
+    $currentdir = "$(Split-Path $versiondir)\current"
 
-    if(test-path $currentdir) {
-        write-host "Unlinking $(friendly_path $currentdir)"
+    if (Test-Path $currentdir) {
+        Write-Host "Unlinking $(friendly_path $currentdir)"
 
         # remove read-only attribute on link
         attrib $currentdir -R /L
 
         # remove the junction
-        & "$env:COMSPEC" /c "rmdir `"$currentdir`""
+        Remove-Item $currentdir -Recurse -Force -ErrorAction Stop
         return $currentdir
     }
     return $versiondir
@@ -988,11 +1006,16 @@ function find_dir_or_subdir($path, $dir) {
 
 function env_add_path($manifest, $dir, $global, $arch) {
     $env_add_path = arch_specific 'env_add_path' $manifest $arch
+    $dir = $dir.TrimEnd('\')
     if ($env_add_path) {
         # GH-3785: Add path in ascending order.
         [Array]::Reverse($env_add_path)
         $env_add_path | Where-Object { $_ } | ForEach-Object {
-            $path_dir = Join-Path $dir $_
+            if ($_ -eq '.') {
+                $path_dir = $dir
+            } else {
+                $path_dir = Join-Path $dir $_
+            }
 
             if (!(is_in_dir $dir $path_dir)) {
                 abort "Error in manifest: env_add_path '$_' is outside the app directory."
@@ -1073,19 +1096,19 @@ function prune_installed($apps, $global) {
     return @($uninstalled), @($installed)
 }
 
-# check whether the app failed to install
-function failed($app, $global) {
-    if (is_directory (appdir $app $global)) {
-        return !(install_info $app (current_version $app $global) $global)
-    } else {
-        return $false
-    }
-}
-
-function ensure_none_failed($apps, $global) {
-    foreach($app in $apps) {
-        if(failed $app $global) {
-            abort "'$app' install failed previously. Please uninstall it and try again."
+function ensure_none_failed($apps) {
+    foreach ($app in $apps) {
+        $app = ($app -split '/|\\')[-1] -replace '\.json$', ''
+        foreach ($global in $true, $false) {
+            if (failed $app $global) {
+                if (installed $app $global) {
+                    info "Repair previous failed installation of $app."
+                    & "$PSScriptRoot\..\libexec\scoop-reset.ps1" $app$(if ($global) { ' --global' })
+                } else {
+                    warn "Purging previous failed installation of $app."
+                    & "$PSScriptRoot\..\libexec\scoop-uninstall.ps1" $app$(if ($global) { ' --global' })
+                }
+            }
         }
     }
 }
@@ -1157,15 +1180,15 @@ function persist_data($manifest, $original_dir, $persist_dir) {
                 if (Test-Path $source) {
                     Move-Item -Force $source "$source.original"
                 }
-            # we don't have persist data in the store, move the source to target, then create link
+                # we don't have persist data in the store, move the source to target, then create link
             } elseif (Test-Path $source) {
                 # ensure target parent folder exist
                 ensure (Split-Path -Path $target) | Out-Null
                 Move-Item $source $target
-            # we don't have neither source nor target data! we need to crate an empty target,
-            # but we can't make a judgement that the data should be a file or directory...
-            # so we create a directory by default. to avoid this, use pre_install
-            # to create the source file before persisting (DON'T use post_install)
+                # we don't have neither source nor target data! we need to create an empty target,
+                # but we can't make a judgement that the data should be a file or directory...
+                # so we create a directory by default. to avoid this, use pre_install
+                # to create the source file before persisting (DON'T use post_install)
             } else {
                 $target = New-Object System.IO.DirectoryInfo($target)
                 ensure $target | Out-Null
@@ -1174,31 +1197,35 @@ function persist_data($manifest, $original_dir, $persist_dir) {
             # create link
             if (is_directory $target) {
                 # target is a directory, create junction
-                & "$env:COMSPEC" /c "mklink /j `"$source`" `"$target`"" | out-null
+                New-Item -Path $source -ItemType Junction -Value $target | Out-Null
                 attrib $source +R /L
             } else {
                 # target is a file, create hard link
-                & "$env:COMSPEC" /c "mklink /h `"$source`" `"$target`"" | out-null
+                New-Item -Path $source -ItemType HardLink -Value $target | Out-Null
             }
         }
     }
 }
 
-function unlink_persist_data($dir) {
+function unlink_persist_data($manifest, $dir) {
+    $persist = $manifest.persist
     # unlink all junction / hard link in the directory
-    Get-ChildItem -Recurse $dir | ForEach-Object {
-        $file = $_
-        if ($null -ne $file.LinkType) {
-            $filepath = $file.FullName
-            # directory (junction)
-            if ($file -is [System.IO.DirectoryInfo]) {
-                # remove read-only attribute on the link
-                attrib -R /L $filepath
-                # remove the junction
-                & "$env:COMSPEC" /c "rmdir /s /q `"$filepath`""
-            } else {
-                # remove the hard link
-                & "$env:COMSPEC" /c "del `"$filepath`""
+    if ($persist) {
+        @($persist) | ForEach-Object {
+            $source, $null = persist_def $_
+            $source = Get-Item "$dir\$source"
+            if ($source.LinkType) {
+                $source_path = $source.FullName
+                # directory (junction)
+                if ($source -is [System.IO.DirectoryInfo]) {
+                    # remove read-only attribute on the link
+                    attrib -R /L $source_path
+                    # remove the junction
+                    Remove-Item -Path $source_path -Recurse -Force -ErrorAction SilentlyContinue
+                } else {
+                    # remove the hard link
+                    Remove-Item -Path $source_path -Force -ErrorAction SilentlyContinue
+                }
             }
         }
     }
@@ -1213,5 +1240,23 @@ function persist_permission($manifest, $global) {
         $acl = Get-Acl -Path $path
         $acl.SetAccessRule($target_rule)
         $acl | Set-Acl -Path $path
+    }
+}
+
+# test if there are running processes
+function test_running_process($app, $global) {
+    $processdir = appdir $app $global | Convert-Path
+    $running_processes = Get-Process | Where-Object { $_.Path -like "$processdir\*" }
+
+    if ($running_processes) {
+        if (get_config 'ignore_running_processes') {
+            warn "Application `"$app`" is still running. Scoop is configured to ignore this condition."
+            return $false
+        } else {
+            error "Application `"$app`" is still running. Close all instances and try again."
+            return $true
+        }
+    } else {
+        return $false
     }
 }
